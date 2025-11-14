@@ -1,0 +1,13 @@
+name: Ruff
+on: [ push, pull_request ]
+jobs:
+  ruff:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+      - name: Run Ruff Linting
+        uses: astral-sh/ruff-action@v3
+        with:
+          args: "--select AIR,F,E,W,I,B,S"
+          pass-with-no-files: true
