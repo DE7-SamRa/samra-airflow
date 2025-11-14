@@ -9,5 +9,5 @@ jobs:
       - name: Run Ruff Linting
         uses: astral-sh/ruff-action@v3
         with:
-          args: --select AIR,F,E,W,I,B,S
+          args: check --select AIR,F,E,W,I,B,S
           pass-with-no-files: true
