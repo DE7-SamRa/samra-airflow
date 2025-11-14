@@ -1,0 +1,20 @@
+enable:
+  prs: true
+
+comments:
+  prs: |
+    Labeler automatically labeled your pull request!
+    
+labels:
+  'feature':
+    include:
+      - '\bfeat\b'
+  'fix':
+    include:
+      - '\bfix\b'
+  'test':
+    include:
+      - '\btest\b'
+  'docs':
+    include:
+      - '\bdocs\b'
