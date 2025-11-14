@@ -12,10 +12,18 @@
 두 공식 홈페이지의 설명에 따라 install_airflow.sh 작성
 - Docker : https://docs.docker.com/engine/install/ubuntu/#upgrade-docker-engine-1
 - Airflow : https://airflow.apache.org/docs/apache-airflow/stable/howto/docker-compose/index.html
-- .env 파일에 airflow 아이디와 비밀번호 추가
+sh 파일 실행
+```
+sh install_airflow.sh
+```
+./airflow_project/.env 파일에 airflow 아이디와 비밀번호 추가
 ```
 _AIRFLOW_WWW_USER_USERNAME=your_id
 _AIRFLOW_WWW_USER_PASSWORD=your_password
+```
+./airflow/docker-compose.yml 파일에 examples를 false로 설정
+```
+AIRFLOW__CORE__LOAD_EXAMPLES: 'false'
 ```
 이후 docker compose 추가 명령어를 통해 airflow 가동
 ```
