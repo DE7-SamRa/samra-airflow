@@ -1,5 +1,5 @@
 enable:
-  - 'src/**'
+  - "src/**"
 
 comments:
   prs: |
