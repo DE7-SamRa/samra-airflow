@@ -1,20 +1,11 @@
-enable:
-  prs: true
+feature:
+  - head-branch: ['^feat', 'feat']
 
-comments:
-  prs: |
-    Labeler automatically labeled your pull request!
-    
-labels:
-  'feature':
-    include:
-      - '\bfeat\b'
-  'fix':
-    include:
-      - '\bfix\b'
-  'test':
-    include:
-      - '\btest\b'
-  'docs':
-    include:
-      - '\bdocs\b'
+fix:
+  - head-branch: ['^fix', 'fix']
+
+test
+  - head-branch: ['^test', 'test']
+
+docs
+  - head-branch: ['^docs', 'docs']
