@@ -1,11 +1,11 @@
 feature:
-  - head-branch: ['^feat', 'feat']
+ - head-branch: ['^feat', 'feat']
 
 fix:
-  - head-branch: ['^fix', 'fix']
+ - head-branch: ['^fix', 'fix']
 
 test
-  - head-branch: ['^test', 'test']
+ - head-branch: ['^test', 'test']
 
 docs
-  - head-branch: ['^docs', 'docs']
+ - head-branch: ['^docs', 'docs']
