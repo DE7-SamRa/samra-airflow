@@ -16,6 +16,6 @@ jobs:
           key: ${{ secrets.SSH_PRIVATE_KEY }}
           port: 22
           
-          scripts: |
+          script: |
             cd /home/ubuntu
             echo "test done" > test.txt
