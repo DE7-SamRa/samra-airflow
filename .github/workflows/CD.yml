@@ -17,5 +17,6 @@ jobs:
           port: 22
           
           script: |
-            cd /home/ubuntu
-            echo "test done" > test.txt
+            cd /home/ubuntu/samra-airflow
+            git fetch
+            git pull
