@@ -10,8 +10,8 @@ from typing import Any, Dict, List
 
 import pandas as pd
 import requests
-from airflow import DAG
-from airflow.operators.python import PythonOperator
+from airflow.decorators import dag, task
+from airflow.utils.dates import days_ago
 
 # ============================================================================
 # 기본 설정
@@ -43,7 +43,6 @@ default_args = {
     "email_on_retry": False,
     "retries": 2,
     "retry_delay": timedelta(minutes=5),
-    "start_date": datetime(2025, 1, 15),
 }
 
 
@@ -111,7 +110,8 @@ def parse_kma_format_response(response_text: str) -> List[Dict[str, Any]]:
     return items
 
 
-def fetch_and_preprocess(**context):
+@task(task_id="fetch_and_preprocess")
+def fetch_and_preprocess():
     """
     Task 1: API에서 데이터 크롤링 및 전처리
     """
@@ -211,15 +211,7 @@ def fetch_and_preprocess(**context):
         logger.info(f"   데이터: {len(df)}건")
         logger.info(f"   컬럼: {len(df.columns)}개")
 
-        # XCom을 통해 로컬 파일 경로 전달
-        context['task_instance'].xcom_push(
-            key='local_file_path', value=local_file
-        )
-        context['task_instance'].xcom_push(
-            key='record_count', value=len(df)
-        )
-
-        return local_file
+        return {"local_file": local_file, "record_count": len(df)}
 
     except requests.exceptions.Timeout:
         logger.error("❌ 타임아웃 (30초 초과)")
@@ -232,7 +224,8 @@ def fetch_and_preprocess(**context):
         raise
 
 
-def upload_to_s3(**context):
+@task(task_id="upload_to_s3")
+def upload_to_s3(fetch_result: Dict[str, Any]):
     """
     Task 2: S3에 파일 업로드
     """
@@ -240,17 +233,12 @@ def upload_to_s3(**context):
     logger.info("S3 업로드 시작")
     logger.info("=" * 80)
 
-    # XCom에서 로컬 파일 경로 가져오기
-    task_instance = context['task_instance']
-    local_file = task_instance.xcom_pull(
-        task_ids='fetch_and_preprocess',
-        key='local_file_path'
-    )
+    if not fetch_result:
+        logger.warning("전처리된 데이터가 없습니다.")
+        return None
 
-    record_count = task_instance.xcom_pull(
-        task_ids='fetch_and_preprocess',
-        key='record_count'
-    )
+    local_file = fetch_result.get("local_file")
+    record_count = fetch_result.get("record_count")
 
     if not local_file or not os.path.exists(local_file):
         logger.error(f"로컬 파일을 찾을 수 없습니다: {local_file}")
@@ -263,8 +251,7 @@ def upload_to_s3(**context):
         # S3 클라이언트 생성
         s3_client = boto3.client('s3')
 
-        # S3 키 생성 - raw_data/wwarn_data로 수정
-        file_name = os.path.basename(local_file)
+        # S3 키 생성 - raw_data/wwarn_data로 저장
         s3_key = "raw_data/wwarn_data"
 
         logger.info(f"파일: {local_file}")
@@ -285,12 +272,7 @@ def upload_to_s3(**context):
         except Exception as e:
             logger.warning(f"로컬 파일 삭제 실패: {str(e)}")
 
-        # XCom에 S3 경로 저장
-        task_instance.xcom_push(
-            key='s3_path', value=f"s3://{S3_BUCKET}/{s3_key}"
-        )
-
-        return s3_key
+        return f"s3://{S3_BUCKET}/{s3_key}"
 
     except ClientError as e:
         logger.error(f"❌ S3 오류: {str(e)}")
@@ -301,28 +283,24 @@ def upload_to_s3(**context):
 
 
 # ============================================================================
-# DAG 및 Task 정의
+# DAG 정의 (TaskFlow API 사용)
 # ============================================================================
 
-with DAG(
+@dag(
     dag_id="kma_warning_pipeline",
     description="매 정각마다 기상청 특보현황 데이터 크롤링 및 S3 적재",
     default_args=default_args,
     schedule="0 * * * *",
+    start_date=datetime(2025, 1, 15),
     tags=["kma", "weather", "data-engineering"],
     catchup=False,
     max_active_runs=1,
-) as dag:
+)
+def kma_warning_pipeline():
+    """기상청 특보 데이터 파이프라인"""
+    fetch_result = fetch_and_preprocess()
+    upload_to_s3(fetch_result)
 
-    fetch_and_preprocess_task = PythonOperator(
-        task_id='fetch_and_preprocess',
-        python_callable=fetch_and_preprocess,
-    )
 
-    upload_to_s3_task = PythonOperator(
-        task_id='upload_to_s3',
-        python_callable=upload_to_s3,
-    )
-
-    # Task 의존성
-    fetch_and_preprocess_task >> upload_to_s3_task
+# DAG 인스턴스 생성
+dag_instance = kma_warning_pipeline()
