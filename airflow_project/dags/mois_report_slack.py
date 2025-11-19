@@ -207,4 +207,10 @@ with DAG(
         python_callable=send_slack,
     )
 
-    crawl_latest_report >> download_pdf >> extract_pdf_text >> run_ai_agent >> send_slack
+    (
+        crawl_latest_report
+        >> download_pdf
+        >> extract_pdf_text
+        >> run_ai_agent
+        >> send_slack
+    )
