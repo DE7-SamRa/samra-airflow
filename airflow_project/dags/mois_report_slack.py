@@ -6,23 +6,19 @@ from urllib.parse import urljoin
 import requests
 from bs4 import BeautifulSoup
 
-from airflow.sdk import DAG
 from airflow.providers.standard.operators.python import PythonOperator
+from airflow.sdk import DAG
 
 
 # ====== 설정 ======
 BASE_URL = "https://www.mois.go.kr"
-LIST_URL = (
-
-)
+LIST_URL = ()
 
 # 안전한 임시 디렉토리 사용
 TMP_DIR = tempfile.gettempdir()
 TEXT_OUTPUT_PATH = os.path.join(TMP_DIR, "latest_report.txt")
 
-SLACK_WEBHOOK_URL = (
-
-)
+SLACK_WEBHOOK_URL = ()
 
 # ====== DAG 설정 ======
 default_args = {
@@ -39,7 +35,6 @@ with DAG(
     schedule="0 7 * * *",
     catchup=False,
 ) as dag:
-
     # ==================================
     # 1) 최신 보고서 링크 수집
     # ==================================
@@ -168,12 +163,7 @@ with DAG(
             task_ids="run_ai_agent",
         )
 
-        payload = {
-            "text": (
-                f"📌 *오늘의 안전관리상황 요약*\n"
-                f"```{summary}```"
-            )
-        }
+        payload = {"text": (f"📌 *오늘의 안전관리상황 요약*\n```{summary}```")}
 
         requests.post(
             SLACK_WEBHOOK_URL,
