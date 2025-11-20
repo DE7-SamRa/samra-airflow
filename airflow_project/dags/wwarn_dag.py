@@ -1,5 +1,6 @@
 import logging
 import re
+from datetime import timedelta
 
 import pandas as pd
 import pendulum
@@ -68,7 +69,7 @@ def kma_warning_pipeline():
     # 텍스트 데이터 파이프라인
     # =================================================================
 
-    @task  # noqa: AIR311
+    @task(retries=3, retry_delay=timedelta(minutes=1))  # noqa: AIR311
     def extract_text():
         """특보 텍스트 API 호출"""
         url = "https://apihub.kma.go.kr/api/typ01/url/wrn_now_data.php"
@@ -79,7 +80,8 @@ def kma_warning_pipeline():
         params = {"fe": "f", "tm": tm, "help": 1, "authKey": key}
 
         try:
-            response = requests.get(url, params=params, timeout=30)
+            # [수정] timeout을 30초에서 120초로 증가
+            response = requests.get(url, params=params, timeout=120)
             if response.status_code != 200:
                 raise ValueError(f"Text API Error: {response.status_code}")
 
@@ -190,7 +192,7 @@ def kma_warning_pipeline():
         }
 
         try:
-            response = requests.get(url, params=params, stream=True, timeout=60)
+            response = requests.get(url, params=params, stream=True, timeout=120)
             if response.status_code != 200:
                 logging.error(f"Image API Error: {response.status_code}")
                 return []
