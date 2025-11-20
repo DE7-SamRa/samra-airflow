@@ -47,8 +47,6 @@ def parse_kma_format_response(response_text: str):
             values = [v.strip() for v in line_stripped.split(",")]
 
             # B905: zip() without an explicit strict= parameter
-            # Python 3.10 이상에서 strict=False 사용 가능.
-            # 데이터 길이가 맞지 않아도 가능한 만큼만 묶도록 처리
             if len(values) >= len(headers):
                 item = dict(zip(headers, values[: len(headers)], strict=False))
                 items.append(item)
@@ -59,7 +57,7 @@ def parse_kma_format_response(response_text: str):
     return items
 
 
-@dag(
+@dag(  # noqa: AIR311
     dag_id="kma_warning_pipeline",
     schedule="0 * * * *",
     start_date=pendulum.datetime(2025, 1, 15, tz="Asia/Seoul"),
@@ -71,11 +69,11 @@ def kma_warning_pipeline():
     # 텍스트 데이터 파이프라인
     # =================================================================
 
-    @task
+    @task  # noqa: AIR311
     def extract_text():
         """특보 텍스트 API 호출"""
         url = "https://apihub.kma.go.kr/api/typ01/url/wrn_now_data.php"
-        key = Variable.get("KMA_key", default_var="RReIhJQBRsuXiISUASbLPg")
+        key = Variable.get("KMA_key", default_var="RReIhJQBRsuXiISUASbLPg")  # noqa: AIR311
         now = pendulum.now("Asia/Seoul")
         tm = now.strftime("%Y%m%d%H%M")
 
@@ -102,7 +100,7 @@ def kma_warning_pipeline():
             logging.error(f"API Request Failed: {e}")
             raise
 
-    @task
+    @task  # noqa: AIR311
     def transform_text(items):
         """텍스트 전처리"""
         if not items:
@@ -135,7 +133,7 @@ def kma_warning_pipeline():
 
         return df.to_dict("records")
 
-    @task
+    @task  # noqa: AIR311
     def load_text_to_s3(data_list, logical_date=None):
         """텍스트 데이터 CSV S3 적재"""
         if not data_list:
@@ -166,11 +164,11 @@ def kma_warning_pipeline():
     # 이미지 데이터 파이프라인
     # =================================================================
 
-    @task
+    @task  # noqa: AIR311
     def process_image(logical_date=None):
         """이미지 API 호출 및 메타데이터 생성"""
         url = "https://apihub.kma.go.kr/api/typ03/cgi/wrn/nph-wrn7"
-        key = Variable.get("KMA_key", default_var="RReIhJQBRsuXiISUASbLPg")
+        key = Variable.get("KMA_key", default_var="RReIhJQBRsuXiISUASbLPg")  # noqa: AIR311
 
         if isinstance(logical_date, str):
             now = pendulum.parse(logical_date).in_timezone("Asia/Seoul")
@@ -226,7 +224,7 @@ def kma_warning_pipeline():
             logging.error(f"Image process failed: {e}")
             return []
 
-    @task
+    @task  # noqa: AIR311
     def load_img_meta_to_s3(meta_data, logical_date=None):
         """이미지 메타데이터 적재"""
         if not meta_data:
@@ -261,8 +259,10 @@ def kma_warning_pipeline():
         conn_id="samra-sf",
         sql="""
             COPY INTO SAMRA.RAW_DATA.WARNING_STATUS
-            FROM @SAMRA.PUBLIC.WWARN_STAGE/{{ ti.xcom_pull(task_ids='load_text_to_s3') }}
-            FILE_FORMAT = (TYPE = 'CSV' SKIP_HEADER = 1 NULL_IF = ('') ENCODING = 'UTF8')
+            FROM @SAMRA.PUBLIC.WWARN_STAGE/{{ ti.xcom_pull(task_ids='load_text_to_s3') }}  -- noqa: E501
+            FILE_FORMAT = (
+                TYPE = 'CSV' SKIP_HEADER = 1 NULL_IF = ('') ENCODING = 'UTF8'
+            )
             FORCE = TRUE;
         """,
         trigger_rule="all_success",
@@ -273,8 +273,10 @@ def kma_warning_pipeline():
         conn_id="samra-sf",
         sql="""
             COPY INTO SAMRA.RAW_DATA.WARNING_IMG
-            FROM @SAMRA.PUBLIC.WWARN_STAGE/{{ ti.xcom_pull(task_ids='load_img_meta_to_s3') }}
-            FILE_FORMAT = (TYPE = 'CSV' SKIP_HEADER = 1 NULL_IF = ('') ENCODING = 'UTF8')
+            FROM @SAMRA.PUBLIC.WWARN_STAGE/{{ ti.xcom_pull(task_ids='load_img_meta_to_s3') }}  -- noqa: E501
+            FILE_FORMAT = (
+                TYPE = 'CSV' SKIP_HEADER = 1 NULL_IF = ('') ENCODING = 'UTF8'
+            )
             FORCE = TRUE;
         """,
         trigger_rule="all_success",
