@@ -1,75 +1,32 @@
-# Airflow DAG: KMA Warning Status Pipeline
-# 매 정각마다 기상청 특보현황 데이터를 크롤링, 전처리, S3에 적재
-
 import logging
-import os
 import re
-import tempfile
-from datetime import datetime, timedelta
-from typing import Any, Dict, List
-
+import pendulum
 import pandas as pd
 import requests
-from airflow.models.dag import DAG
-from airflow.providers.standard.operators.python import PythonOperator
-
-# ============================================================================
-# 기본 설정
-# ============================================================================
+from airflow.decorators import dag, task
+from airflow.models import Variable
+from airflow.providers.amazon.aws.hooks.s3 import S3Hook
+from airflow.providers.common.sql.operators.sql import SQLExecuteQueryOperator
+from airflow.exceptions import AirflowSkipException
 
 logger = logging.getLogger(__name__)
 
-# 기상청 API 설정
-KMA_SERVICE_KEY = "RReIhJQBRsuXiISUASbLPg"
-WRN_NOW_DATA_URL = "https://apihub.kma.go.kr/api/typ01/url/wrn_now_data.php"
+# 환경 설정
+BUCKET_NAME = 'samra-bucket'
+AWS_REGION = 'ap-northeast-2'
 
-# AWS S3 설정
-S3_BUCKET = "samra-bucket"
-S3_PREFIX = "kma-warning-data"
-AWS_CONN_ID = "aws_default"  # Airflow Connection ID
-
-# 로컬 임시 폴더
-LOCAL_TEMP_DIR = tempfile.mkdtemp(prefix="airflow_kma_")
-
-# ============================================================================
-# DAG 기본 설정
-# ============================================================================
-
-default_args = {
-    "owner": "정준석",
-    "depends_on_past": False,
-    "email": ["joonseok.chung@gmail.com"],
-    "email_on_failure": True,
-    "email_on_retry": False,
-    "retries": 2,
-    "retry_delay": timedelta(minutes=5),
-}
-
-
-# ============================================================================
-# Task Functions
-# ============================================================================
-
-
-def parse_kma_format_response(response_text: str) -> List[Dict[str, Any]]:
-    """
-    기상청 특수 형식 응답 파싱
-    10개 컬럼: REG_UP, REG_UP_KO, REG_ID, REG_KO, TM_FC, TM_EF, WRN, LVL, CMD, ED_TM
-    """
-    logger.info("응답 파싱 시작...")
+def parse_kma_format_response(response_text: str):
+    """기상청 특수 형식 응답 파싱"""
     items = []
     lines = response_text.strip().split('\n')
     headers = []
     data_started = False
-
-    for _, line in enumerate(lines):
+    
+    for line in lines:
         line_stripped = line.strip()
-
-        # 빈 줄 스킵
-        if not line_stripped:
-            continue
-
-        # 헤더 라인 감지
+        if not line_stripped: continue
+        
+        # 헤더 파싱
         if not data_started and line_stripped.startswith('#'):
             if "REG_UP" in line_stripped and "TM_FC" in line_stripped:
                 header_match = re.findall(
@@ -77,248 +34,219 @@ def parse_kma_format_response(response_text: str) -> List[Dict[str, Any]]:
                     r'\bTM_FC\b|\bTM_EF\b|\bWRN\b|\bLVL\b|\bCMD\b|\bED_TM\b',
                     line_stripped
                 )
-
                 if header_match:
                     headers = header_match
-                    logger.info(
-                        f"✓ 헤더 파싱 성공: {len(headers)}개 컬럼 - {headers}"
-                    )
-            continue
-
-        # 데이터 라인 처리
+                continue
+        
+        # 데이터 파싱
         if not line_stripped.startswith('#') and headers:
             data_started = True
             values = [v.strip() for v in line_stripped.split(',')]
-
+            
             if len(values) >= len(headers):
-                item_dict = {
-                    header: value
-                    for header, value in zip(
-                        headers, values[:len(headers)], strict=True
-                    )
-                }
-                items.append(item_dict)
+                item = dict(zip(headers, values[:len(headers)]))
+                items.append(item)
             elif len(values) == len(headers) - 1:
-                item_dict = {
-                    header: value
-                    for header, value in zip(headers[:-1], values, strict=True)
-                }
-                item_dict[headers[-1]] = ""
-                items.append(item_dict)
-
-    logger.info(f"✓ 파싱 완료: {len(items)}건")
+                item = dict(zip(headers[:-1], values))
+                item[headers[-1]] = ""
+                items.append(item)
     return items
 
+@dag(
+    dag_id='kma_warning_pipeline',
+    schedule='0 * * * *',
+    start_date=pendulum.datetime(2025, 1, 15, tz="Asia/Seoul"),
+    catchup=False,
+    tags=["kma", "weather", "snowflake", "image_split"]
+)
+def kma_warning_pipeline():
 
-def fetch_and_preprocess(**context):
-    """
-    Task 1: API에서 데이터 크롤링 및 전처리
-    """
-    logger.info("=" * 80)
-    logger.info("기상청 특보현황 조회 (발표시간 기준)")
-    logger.info("=" * 80)
+    # =================================================================
+    # 텍스트 데이터 파이프라인
+    # =================================================================
 
-    # 기준시각 설정
-    now = datetime.now()
-    tm = now.strftime("%Y%m%d%H%M")
+    @task
+    def extract_text():
+        """특보 텍스트 API 호출"""
+        url = "https://apihub.kma.go.kr/api/typ01/url/wrn_now_data.php"
+        key = Variable.get("KMA_key", default_var="RReIhJQBRsuXiISUASbLPg") 
+        now = pendulum.now("Asia/Seoul")
+        tm = now.strftime("%Y%m%d%H%M")
+        
+        params = {"fe": "f", "tm": tm, "help": 1, "authKey": key}
+        
+        try:
+            response = requests.get(url, params=params, timeout=30)
+            if response.status_code != 200:
+                raise ValueError(f"Text API Error: {response.status_code}")
 
-    try:
-        # API 요청
-        params = {
-            "fe": "f",  # 발표시간 기준
-            "tm": tm,
-            "help": 1,
-            "authKey": KMA_SERVICE_KEY,
-        }
+            # 인코딩 강제 지정
+            response.encoding = 'euc-kr' 
+            
+            items = parse_kma_format_response(response.text)
+            
+            if not items:
+                logging.info("API 호출 성공했으나 파싱된 데이터가 없습니다.")
+                return []
+                
+            logging.info(f"파싱된 데이터 건수: {len(items)}건")
+            return items
+            
+        except Exception as e:
+            logging.error(f"API Request Failed: {e}")
+            raise
 
-        logger.info(f"요청: {WRN_NOW_DATA_URL}")
-        logger.info(f"파라미터: fe=f, tm={tm}")
-        logger.info("[API 요청 중...]")
-
-        response = requests.get(
-            WRN_NOW_DATA_URL, params=params, timeout=30
-        )
-        response.raise_for_status()
-        response_text = response.text.strip()
-
-        logger.info(f"✓ 응답 수신: {len(response_text)} bytes")
-
-        if not response_text:
-            logger.warning("API 응답이 비어있습니다.")
-            return None
-
-        # 응답 파싱
-        items = parse_kma_format_response(response_text)
-        logger.info(f"✓ 조회 성공: {len(items)}건")
-
-        # 데이터 전처리
-        logger.info("=" * 80)
-        logger.info("데이터 전처리")
-        logger.info("=" * 80)
-
-        if not items:
-            logger.warning("데이터가 없습니다.")
-            return None
+    @task
+    def transform_text(items):
+        """텍스트 전처리"""
+        if not items: 
+            return []
 
         df = pd.DataFrame(items)
-        logger.info(f"입력: {len(df)}건, {len(df.columns)}개 컬럼")
+        required_cols = ["REG_UP", "REG_UP_KO", "REG_ID", "REG_KO", "TM_FC", "TM_EF", "WRN", "LVL", "CMD", "ED_TM"]
+        cols = [c for c in required_cols if c in df.columns]
+        df = df[cols]
 
-        # 필요한 컬럼만 선택
-        required_cols = [
-            "REG_UP", "REG_UP_KO", "REG_ID", "REG_KO",
-            "TM_FC", "TM_EF", "WRN", "LVL", "CMD", "ED_TM"
-        ]
-        available_cols = [col for col in required_cols if col in df.columns]
-        df = df[available_cols]
+        for col in ["TM_FC", "TM_EF"]:
+            if col in df.columns:
+                df[col] = pd.to_datetime(df[col], errors='coerce').dt.strftime('%Y-%m-%d %H:%M:%S')
+        
+        df['processed_at'] = pendulum.now("Asia/Seoul").to_datetime_string()
+        
+        df = df.where(pd.notnull(df), None)
+        
+        return df.to_dict('records')
 
-        # 공백 제거
-        for col in df.columns:
-            if df[col].dtype == 'object':
-                df[col] = df[col].str.strip()
+    @task
+    def load_text_to_s3(data_list, logical_date=None):
+        """텍스트 데이터 CSV S3 적재"""
+        if not data_list:
+            raise AirflowSkipException("적재할 텍스트 데이터가 없습니다.")
 
-        # 날짜 형식 변환
-        for date_col in ["TM_FC", "TM_EF"]:
-            if date_col in df.columns:
-                try:
-                    df[date_col] = pd.to_datetime(
-                        df[date_col].astype(str),
-                        format="%Y%m%d%H%M",
-                        errors="coerce"
-                    )
-                    logger.info(f"✓ {date_col} 날짜 변환")
-                except Exception as e:
-                    logger.error(f"✗ {date_col} 변환 실패: {str(e)}")
+        df = pd.DataFrame(data_list)
+        
+        if isinstance(logical_date, str):
+             ts = pendulum.parse(logical_date).strftime("%Y%m%d_%H%M")
+        else:
+             ts = logical_date.strftime("%Y%m%d_%H%M")
 
-        # 처리 시간 추가
-        df['processed_at'] = datetime.now()
-        logger.info(f"✓ 전처리 완료: {len(df)}건")
+        s3_key = f"raw_data/WWARN/wwarn_data/wwarn_{ts}.csv"
+        csv_buffer = df.to_csv(index=False, encoding='utf-8-sig')
 
-        # 로컬 임시 디렉토리 생성
-        os.makedirs(LOCAL_TEMP_DIR, exist_ok=True)
-
-        # CSV 저장
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        local_file = os.path.join(
-            LOCAL_TEMP_DIR, f"warning_status_{timestamp}.csv"
-        )
-        df.to_csv(local_file, index=False, encoding='utf-8-sig')
-
-        logger.info("=" * 80)
-        logger.info("CSV 저장")
-        logger.info("=" * 80)
-        logger.info(f"✅ 저장 완료: {local_file}")
-        logger.info(f"   데이터: {len(df)}건")
-        logger.info(f"   컬럼: {len(df.columns)}개")
-
-        # XCom을 통해 로컬 파일 경로 전달
-        task_instance = context['task_instance']
-        task_instance.xcom_push(key='local_file_path', value=local_file)
-        task_instance.xcom_push(key='record_count', value=len(df))
-
-        return local_file
-
-    except requests.exceptions.Timeout:
-        logger.error("❌ 타임아웃 (30초 초과)")
-        raise
-    except requests.exceptions.RequestException as e:
-        logger.error(f"❌ API 오류: {str(e)}")
-        raise
-    except Exception as e:
-        logger.error(f"❌ 오류: {str(e)}")
-        raise
-
-
-def upload_to_s3(**context):
-    """
-    Task 2: S3에 파일 업로드
-    """
-    logger.info("=" * 80)
-    logger.info("S3 업로드 시작")
-    logger.info("=" * 80)
-
-    # XCom에서 로컬 파일 경로 가져오기
-    task_instance = context['task_instance']
-    local_file = task_instance.xcom_pull(
-        task_ids='fetch_and_preprocess',
-        key='local_file_path'
-    )
-
-    record_count = task_instance.xcom_pull(
-        task_ids='fetch_and_preprocess',
-        key='record_count'
-    )
-
-    if not local_file or not os.path.exists(local_file):
-        logger.error(f"로컬 파일을 찾을 수 없습니다: {local_file}")
-        raise FileNotFoundError(f"File not found: {local_file}")
-
-    try:
-        import boto3
-        from botocore.exceptions import ClientError
-
-        # S3 클라이언트 생성
-        s3_client = boto3.client('s3')
-
-        # S3 키 생성 - raw_data/wwarn_data로 저장
-        s3_key = "raw_data/wwarn_data"
-
-        logger.info(f"파일: {local_file}")
-        logger.info(f"버킷: {S3_BUCKET}")
-        logger.info(f"키: {s3_key}")
-
-        # S3에 업로드
-        s3_client.upload_file(local_file, S3_BUCKET, s3_key)
-
-        logger.info("✅ S3 업로드 성공")
-        logger.info(f"   S3 경로: s3://{S3_BUCKET}/{s3_key}")
-        logger.info(f"   데이터 건수: {record_count}건")
-
-        # 업로드 완료 후 로컬 파일 삭제
-        try:
-            os.remove(local_file)
-            logger.info(f"✓ 로컬 파일 삭제: {local_file}")
-        except Exception as e:
-            logger.warning(f"로컬 파일 삭제 실패: {str(e)}")
-
-        # XCom에 S3 경로 저장
-        task_instance.xcom_push(
-            key='s3_path', value=f"s3://{S3_BUCKET}/{s3_key}"
-        )
-
+        hook = S3Hook(aws_conn_id='s3_key')
+        hook.load_string(string_data=csv_buffer, key=s3_key, bucket_name=BUCKET_NAME, replace=True)
+        
+        logging.info(f"S3 Upload Success: {s3_key}")
         return s3_key
 
-    except ClientError as e:
-        logger.error(f"❌ S3 오류: {str(e)}")
-        raise
-    except Exception as e:
-        logger.error(f"❌ 오류: {str(e)}")
-        raise
+    # =================================================================
+    # 이미지 데이터 파이프라인
+    # =================================================================
 
+    @task
+    def process_image(logical_date=None):
+        """이미지 API 호출 및 메타데이터 생성"""
+        url = "https://apihub.kma.go.kr/api/typ03/cgi/wrn/nph-wrn7"
+        key = Variable.get("KMA_key", default_var="RReIhJQBRsuXiISUASbLPg")
+        
+        if isinstance(logical_date, str):
+             now = pendulum.parse(logical_date).in_timezone("Asia/Seoul")
+        else:
+             now = pendulum.now("Asia/Seoul")
+        
+        tm = now.strftime("%Y%m%d%H%M")
+        file_ts = now.strftime("%Y%m%d_%H%M")
 
-# ============================================================================
-# DAG 및 Task 정의
-# ============================================================================
+        params = {
+            "tm": tm, "lon": "127.7", "lat": "36.1", "range": "300", 
+            "size": "685", "tmef": "1", "city": "1", "name": "0",
+            "wrn": "W,R,C,D,O,V,T,S,Y,H", "authKey": key
+        }
 
-with DAG( # noqa: AIR311
-    dag_id="kma_warning_pipeline",
-    description="매 정각마다 기상청 특보현황 데이터 크롤링 및 S3 적재",
-    default_args=default_args,
-    schedule="0 * * * *",
-    start_date=datetime(2025, 1, 15),
-    tags=["kma", "weather", "data-engineering"],
-    catchup=False,
-    max_active_runs=1,
-) as dag:
+        try:
+            response = requests.get(url, params=params, stream=True, timeout=60)
+            if response.status_code != 200:
+                logging.error(f"Image API Error: {response.status_code}")
+                return [] 
 
-    fetch_and_preprocess = PythonOperator(
-        task_id='fetch_and_preprocess',
-        python_callable=fetch_and_preprocess,
+            img_s3_key = f"raw_data/WWARN/wwarn_images/wwarn_img_{file_ts}.png"
+            
+            hook = S3Hook(aws_conn_id='s3_key')
+            hook.load_bytes(bytes_data=response.content, key=img_s3_key, bucket_name=BUCKET_NAME, replace=True)
+            
+            full_image_url = f"https://{BUCKET_NAME}.s3.{AWS_REGION}.amazonaws.com/{img_s3_key}"
+            
+            meta_data = [{
+                "TM": tm,
+                "IMAGE_URL": full_image_url,
+                "PROCESSED_AT": now.to_datetime_string() 
+            }]
+            return meta_data
+
+        except Exception as e:
+            logging.error(f"Image process failed: {e}")
+            return []
+
+    @task
+    def load_img_meta_to_s3(meta_data, logical_date=None):
+        """이미지 메타데이터 적재"""
+        if not meta_data:
+            raise AirflowSkipException("적재할 이미지 메타데이터가 없습니다.")
+
+        df = pd.DataFrame(meta_data)
+        
+        if isinstance(logical_date, str):
+             ts = pendulum.parse(logical_date).strftime("%Y%m%d_%H%M")
+        else:
+             ts = logical_date.strftime("%Y%m%d_%H%M")
+
+        s3_key = f"raw_data/WWARN/wwarn_img_meta/img_meta_{ts}.csv"
+        csv_buffer = df.to_csv(index=False, encoding='utf-8-sig')
+
+        hook = S3Hook(aws_conn_id='s3_key')
+        hook.load_string(string_data=csv_buffer, key=s3_key, bucket_name=BUCKET_NAME, replace=True)
+        logging.info(f"Image Meta CSV Uploaded: {s3_key}")
+        return s3_key
+
+    # =================================================================
+    # [Snowflake Operators]
+    # =================================================================
+
+    load_text_snowflake = SQLExecuteQueryOperator(
+        task_id='load_text_snowflake',
+        conn_id='samra-sf',
+        sql="""
+            COPY INTO SAMRA.RAW_DATA.WARNING_STATUS
+            FROM @SAMRA.PUBLIC.WWARN_STAGE/{{ ti.xcom_pull(task_ids='load_text_to_s3') }}
+            FILE_FORMAT = (TYPE = 'CSV' SKIP_HEADER = 1 NULL_IF = ('') ENCODING = 'UTF8')
+            FORCE = TRUE;
+        """,
+        trigger_rule="all_success"
     )
 
-    upload_to_s3 = PythonOperator(
-        task_id='upload_to_s3',
-        python_callable=upload_to_s3,
+    load_img_snowflake = SQLExecuteQueryOperator(
+        task_id='load_img_snowflake',
+        conn_id='samra-sf',
+        sql="""
+            COPY INTO SAMRA.RAW_DATA.WARNING_IMG
+            FROM @SAMRA.PUBLIC.WWARN_STAGE/{{ ti.xcom_pull(task_ids='load_img_meta_to_s3') }}
+            FILE_FORMAT = (TYPE = 'CSV' SKIP_HEADER = 1 NULL_IF = ('') ENCODING = 'UTF8')
+            FORCE = TRUE;
+        """,
+        trigger_rule="all_success"
     )
 
-    # Task 의존성
-    fetch_and_preprocess >> upload_to_s3
+    # =================================================================
+    # [DAG 흐름 연결]
+    # =================================================================
+    
+    text_data = extract_text()
+    transformed_text = transform_text(text_data)
+    text_s3_key = load_text_to_s3(transformed_text, logical_date="{{ logical_date }}")
+    text_s3_key >> load_text_snowflake
+
+    img_meta = process_image(logical_date="{{ logical_date }}")
+    img_meta_s3_key = load_img_meta_to_s3(img_meta, logical_date="{{ logical_date }}")
+    img_meta_s3_key >> load_img_snowflake
+
+kma_warning_pipeline()
