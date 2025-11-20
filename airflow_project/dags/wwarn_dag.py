@@ -257,28 +257,30 @@ def kma_warning_pipeline():
     load_text_snowflake = SQLExecuteQueryOperator(
         task_id="load_text_snowflake",
         conn_id="samra-sf",
-        sql="""
-            COPY INTO SAMRA.RAW_DATA.WARNING_STATUS
-            FROM @SAMRA.PUBLIC.WWARN_STAGE/{{ ti.xcom_pull(task_ids='load_text_to_s3') }}  -- noqa: E501
-            FILE_FORMAT = (
-                TYPE = 'CSV' SKIP_HEADER = 1 NULL_IF = ('') ENCODING = 'UTF8'
-            )
-            FORCE = TRUE;
-        """,
+        # 암시적 문자열 연결을 사용하여 E501 회피 및 SQL 문법 유지
+        sql=(
+            "COPY INTO SAMRA.RAW_DATA.WARNING_STATUS\n"
+            "FROM @SAMRA.PUBLIC.WWARN_STAGE/"
+            "{{ ti.xcom_pull(task_ids='load_text_to_s3') }}\n"
+            "FILE_FORMAT = (TYPE = 'CSV' SKIP_HEADER = 1 "
+            "NULL_IF = ('') ENCODING = 'UTF8')\n"
+            "FORCE = TRUE;"
+        ),
         trigger_rule="all_success",
     )
 
     load_img_snowflake = SQLExecuteQueryOperator(
         task_id="load_img_snowflake",
         conn_id="samra-sf",
-        sql="""
-            COPY INTO SAMRA.RAW_DATA.WARNING_IMG
-            FROM @SAMRA.PUBLIC.WWARN_STAGE/{{ ti.xcom_pull(task_ids='load_img_meta_to_s3') }}  -- noqa: E501
-            FILE_FORMAT = (
-                TYPE = 'CSV' SKIP_HEADER = 1 NULL_IF = ('') ENCODING = 'UTF8'
-            )
-            FORCE = TRUE;
-        """,
+        # 암시적 문자열 연결을 사용하여 E501 회피 및 SQL 문법 유지
+        sql=(
+            "COPY INTO SAMRA.RAW_DATA.WARNING_IMG\n"
+            "FROM @SAMRA.PUBLIC.WWARN_STAGE/"
+            "{{ ti.xcom_pull(task_ids='load_img_meta_to_s3') }}\n"
+            "FILE_FORMAT = (TYPE = 'CSV' SKIP_HEADER = 1 "
+            "NULL_IF = ('') ENCODING = 'UTF8')\n"
+            "FORCE = TRUE;"
+        ),
         trigger_rule="all_success",
     )
 
