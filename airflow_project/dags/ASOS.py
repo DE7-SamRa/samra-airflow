@@ -46,7 +46,7 @@ def extract(startHh, endHh, stnIds, date):
             'numOfRows': '24',
             'dataType': 'JSON',
         }
-        response = requests.get(url, params=params, timeout=10)
+        response = requests.get(url, params=params, timeout=60)
         result.append(response.json())
 
     return result
