@@ -3,13 +3,17 @@ import tempfile
 from datetime import datetime, timedelta
 from urllib.parse import urljoin
 
+import PyPDF2
 import requests
-from airflow.providers.standard.operators.python import PythonOperator
-from airflow.sdk import DAG
 from bs4 import BeautifulSoup
+from gradio_client import Client
+
+from airflow.sdk import DAG
+from airflow.providers.standard.operators.python import PythonOperator
 
 
 # ====== 설정 ======
+
 BASE_URL = "https://www.mois.go.kr"
 LIST_URL = ("https://www.mois.go.kr/frt/bbs/type001/"
             "commonSelectBoardList.do?bbsId=BBSMSTR_000000000336")
@@ -106,7 +110,6 @@ with DAG(
     # 3) PDF 텍스트 추출
     # ==================================
     def extract_pdf_text(**kwargs):
-        import PyPDF2
 
         ti = kwargs["ti"]
         download_path = ti.xcom_pull(
@@ -134,7 +137,6 @@ with DAG(
     # 4) AI 요약 생성
     # ==================================
     def run_ai_agent(**kwargs):
-        from gradio_client import Client
 
         ti = kwargs["ti"]
         text = ti.xcom_pull(
